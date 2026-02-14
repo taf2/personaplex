@@ -257,11 +257,25 @@ class ServerState:
                                         text_accum.flush()
                                         was_injecting = False
                                     text_accum.accumulate_token(_text)
+                                    await self.tool_engine.check_and_execute(
+                                        text_accum.peek(),
+                                        ws,
+                                        clog,
+                                        cooldowns=session_tool_cooldowns,
+                                        allow_async_fallback=False,
+                                    )
                                     if text_accum.should_check():
                                         sentence = text_accum.flush()
-                                        asyncio.create_task(
-                                            self.tool_engine.check_and_execute(sentence, ws, clog)
+                                        task = await self.tool_engine.check_and_execute(
+                                            sentence,
+                                            ws,
+                                            clog,
+                                            cooldowns=session_tool_cooldowns,
+                                            allow_async_fallback=True,
                                         )
+                                        if task is not None:
+                                            tool_tasks.add(task)
+                                            task.add_done_callback(tool_tasks.discard)
                         else:
                             text_token_map = ['EPAD', 'BOS', 'EOS', 'PAD']
 
@@ -280,6 +294,8 @@ class ServerState:
         if len(request.query["voice_prompt"]) > 0:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
+        tool_tasks: set[asyncio.Task] = set()
+        session_tool_cooldowns: dict[str, float] = {}
         async with self.lock:
             if seed is not None and seed != -1:
                 seed_all(seed)
@@ -326,6 +342,11 @@ class ServerState:
                         await task
                     except asyncio.CancelledError:
                         pass
+                if tool_tasks:
+                    for task in list(tool_tasks):
+                        task.cancel()
+                    await asyncio.gather(*tool_tasks, return_exceptions=True)
+                    tool_tasks.clear()
                 await ws.close()
                 clog.log("info", "session closed")
                 # await asyncio.gather(opus_loop(), recv_loop(), send_loop())

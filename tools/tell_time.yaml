@@ -6,6 +6,17 @@ executor:
   command: "date '+%I:%M %p'"
   timeout_seconds: 5
 result_prefix: "The current time is "
+execution_mode: blocking
+blocking_triggers:
+  - "let me check the time"
+  - "i'll check the time"
+  - "i will check the time"
+  - "let me check what time it is"
+  - "checking the time"
+  - "let me get the current time"
+  - "i can check the time"
+  - "i can tell you the time"
+  - "what time zone are you in"
 examples:
   - "What time is it?"
   - "Can you tell me the time?"
