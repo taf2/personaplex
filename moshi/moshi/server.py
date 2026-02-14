@@ -27,6 +27,7 @@
 import argparse
 import asyncio
 from dataclasses import dataclass
+import json
 import random
 import os
 from pathlib import Path
@@ -216,6 +217,16 @@ class ServerState:
             if not transcript:
                 return
             clog.log("info", f"user transcript: {transcript}")
+            if not ws.closed:
+                try:
+                    payload = {
+                        "kind": "user_transcript",
+                        "text": transcript,
+                        "timestamp": time.time(),
+                    }
+                    await ws.send_bytes(b"\x04" + json.dumps(payload).encode("utf8"))
+                except (ConnectionResetError, aiohttp.ClientConnectionError):
+                    pass
             task = await self.tool_engine.check_user_text_and_execute(
                 transcript,
                 ws,

@@ -240,10 +240,9 @@ export const Conversation:FC<ConversationProps> = ({
         socket,
       }}
     >
-    <div>
-    <div className="main-grid h-screen max-h-screen w-screen p-4 max-w-96 md:max-w-screen-lg m-auto">
-      <div className="controls text-center flex justify-center items-center gap-2">
-         <Button
+      <div className="h-screen w-full max-w-[1800px] m-auto p-4 flex flex-col gap-3">
+        <div className="controls shrink-0 text-center flex justify-center items-center gap-2">
+          <Button
             onClick={onPressConnect}
             disabled={socketStatus !== "connected" && !isOver}
           >
@@ -251,39 +250,66 @@ export const Conversation:FC<ConversationProps> = ({
           </Button>
           <div className={`h-4 w-4 rounded-full ${socketColor}`} />
         </div>
-        {audioContext.current && worklet.current && <MediaContext.Provider value={
-          {
-            startRecording,
-            stopRecording,
-            audioContext: audioContext as MutableRefObject<AudioContext>,
-            worklet: worklet as MutableRefObject<AudioWorkletNode>,
-            audioStreamDestination,
-            stereoMerger,
-            micDuration,
-            actualAudioPlayed,
-          }
-        }>
-          <div className="relative player h-full max-h-full w-full justify-between gap-3 md:p-12">
-              <ServerAudio
-                setGetAudioStats={(callback: () => AudioStats) =>
-                  (getAudioStats.current = callback)
-                }
-                theme={theme}
-              />
-              <UserAudio theme={theme}/>
-              <div className="pt-8 text-sm flex justify-center items-center flex-col download-links">
-                {audioURL && <div><a href={audioURL} download={`personaplex_audio.${getExtension("audio")}`} className="pt-2 text-center block">Download audio</a></div>}
+        {audioContext.current && worklet.current && (
+          <MediaContext.Provider value={
+            {
+              startRecording,
+              stopRecording,
+              audioContext: audioContext as MutableRefObject<AudioContext>,
+              worklet: worklet as MutableRefObject<AudioWorkletNode>,
+              audioStreamDestination,
+              stereoMerger,
+              micDuration,
+              actualAudioPlayed,
+            }
+          }>
+            <div className="shrink-0 rounded-md border border-white/20 bg-black/10 p-3">
+              <div className="flex flex-wrap items-start gap-4">
+                <div className="min-w-[260px]">
+                  <ServerAudioStats getAudioStats={getAudioStats} />
+                </div>
+                <div className="rounded-md border border-white/20 bg-black/20 p-2">
+                  <div className="mb-1 text-xs font-semibold tracking-wide uppercase opacity-80">Assistant audio</div>
+                  <div className="h-20 w-20">
+                    <ServerAudio
+                      setGetAudioStats={(callback: () => AudioStats) =>
+                        (getAudioStats.current = callback)
+                      }
+                      theme={theme}
+                      className="h-full w-full"
+                    />
+                  </div>
+                </div>
+                <div className="rounded-md border border-white/20 bg-black/20 p-2">
+                  <div className="mb-1 text-xs font-semibold tracking-wide uppercase opacity-80">User audio</div>
+                  <div className="h-20 w-20">
+                    <UserAudio theme={theme} className="h-full w-full" />
+                  </div>
+                </div>
               </div>
-          </div>
-          <div className="scrollbar player-text" ref={textContainerRef}>
-            <TextDisplay containerRef={textContainerRef}/>
-          </div>
-          <div className="player-stats hidden md:block">
-            <ServerAudioStats getAudioStats={getAudioStats} />
-          </div></MediaContext.Provider>}
-        </div>
-        <div className="max-w-96 md:max-w-screen-lg p-4 m-auto text-center">
-          <ServerInfo/>
+            </div>
+            <div className="min-h-0 flex-1">
+              <div className="scrollbar h-full overflow-auto rounded-md border border-white/20 bg-black/5" ref={textContainerRef}>
+                <TextDisplay containerRef={textContainerRef} />
+              </div>
+            </div>
+            <div className="shrink-0 pt-1 text-sm flex justify-center items-center flex-col download-links">
+              {audioURL && (
+                <div>
+                  <a
+                    href={audioURL}
+                    download={`personaplex_audio.${getExtension("audio")}`}
+                    className="pt-2 text-center block"
+                  >
+                    Download audio
+                  </a>
+                </div>
+              )}
+            </div>
+          </MediaContext.Provider>
+        )}
+        <div className="shrink-0 w-full p-2 text-center">
+          <ServerInfo />
         </div>
       </div>
     </SocketContext.Provider>

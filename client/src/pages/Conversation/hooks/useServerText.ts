@@ -25,11 +25,17 @@ export type ToolStatus = {
   error?: string;
 };
 
+export type UserTranscriptEvent = {
+  text: string;
+  timestamp: number;
+};
+
 export const useServerText = () => {
   const [text, setText] = useState<string[]>([]);
   const [totalTextMessages, setTotalTextMessages] = useState(0);
   const [toolEvents, setToolEvents] = useState<ToolTimelineEvent[]>([]);
   const [toolStatuses, setToolStatuses] = useState<Record<string, ToolStatus>>({});
+  const [userTranscript, setUserTranscript] = useState<UserTranscriptEvent[]>([]);
   const { socket } = useSocketContext();
 
   const onSocketMessage = useCallback((e: MessageEvent) => {
@@ -111,6 +117,21 @@ export const useServerText = () => {
           },
         }));
       }
+      return;
+    }
+    if (message.type === "metadata" && message.data && typeof message.data === "object") {
+      const payload = message.data as { kind?: unknown; text?: unknown; timestamp?: unknown };
+      if (payload.kind === "user_transcript" && typeof payload.text === "string") {
+        const transcriptText = payload.text;
+        const ts = typeof payload.timestamp === "number" ? payload.timestamp * 1000 : Date.now();
+        setUserTranscript(events => [
+          ...events,
+          {
+            text: transcriptText,
+            timestamp: ts,
+          },
+        ]);
+      }
     }
   }, []);
 
@@ -122,11 +143,12 @@ export const useServerText = () => {
     setText([]);
     setToolEvents([]);
     setToolStatuses({});
+    setUserTranscript([]);
     currentSocket.addEventListener("message", onSocketMessage);
     return () => {
       currentSocket.removeEventListener("message", onSocketMessage);
     };
   }, [socket]);
 
-  return { text, totalTextMessages, toolEvents, toolStatuses };
+  return { text, totalTextMessages, toolEvents, toolStatuses, userTranscript };
 };

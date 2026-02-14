@@ -8,12 +8,13 @@ type TextDisplayProps = {
 export const TextDisplay:FC<TextDisplayProps> = ({
   containerRef,
 }) => {
-  const { text, toolEvents, toolStatuses } = useServerText();
+  const { text, toolEvents, toolStatuses, userTranscript } = useServerText();
   const currentIndex = text.length - 1;
+  const currentUserIndex = userTranscript.length - 1;
   const prevScrollTop = useRef(0);
-  const recentToolEvents = useMemo(() => toolEvents.slice(-8).reverse(), [toolEvents]);
+  const recentToolEvents = useMemo(() => toolEvents.slice(-8), [toolEvents]);
   const orderedToolStatuses = useMemo(
-    () => Object.values(toolStatuses).sort((a, b) => b.updatedAt - a.updatedAt),
+    () => Object.values(toolStatuses).sort((a, b) => a.updatedAt - b.updatedAt),
     [toolStatuses],
   );
 
@@ -25,7 +26,7 @@ export const TextDisplay:FC<TextDisplayProps> = ({
         behavior: "smooth",
       });
     }
-  }, [text, toolEvents]);
+  }, [text, toolEvents, userTranscript]);
 
   const statusClass = (status: ToolStatus["status"]) => {
     if (status === "running") {
@@ -38,15 +39,61 @@ export const TextDisplay:FC<TextDisplayProps> = ({
   };
 
   return (
-    <div className="h-full w-full max-w-full max-h-full  p-2">
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-[280px_minmax(0,1fr)]">
+    <div className="h-full w-full max-w-full max-h-full p-2">
+      <div className="flex h-full flex-col gap-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-[280px_minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="rounded-md border border-white/20 bg-black/20 p-2 text-xs">
+            <div className="mb-2 font-semibold tracking-wide uppercase opacity-80">Tool activity</div>
+            {recentToolEvents.length === 0 && (
+              <div className="opacity-70">No tool activity yet.</div>
+            )}
+            {recentToolEvents.length > 0 && (
+              <div className="flex flex-col gap-1">
+                {recentToolEvents.map((event, i) => (
+                  <div key={`${event.tool}-${event.phase}-${event.timestamp}-${i}`} className="rounded border border-white/10 bg-black/20 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>{event.tool}</div>
+                      <div className="opacity-70">{event.phase}</div>
+                    </div>
+                    <div className="opacity-60">{new Date(event.timestamp).toLocaleTimeString()}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="rounded-md border border-white/20 bg-black/10 p-2 min-h-[120px]">
+            <div className="mb-2 text-xs font-semibold tracking-wide uppercase opacity-80">Assistant speech</div>
+            {text.map((t, i) => (
+              <span
+                key={i}
+                className={`${i === currentIndex ? "font-bold" : "font-normal"}`}
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+          <div className="rounded-md border border-white/20 bg-black/10 p-2 min-h-[120px]">
+            <div className="mb-2 text-xs font-semibold tracking-wide uppercase opacity-80">User speech</div>
+            {userTranscript.length === 0 && (
+              <div className="text-sm opacity-60">Waiting for user transcript...</div>
+            )}
+            {userTranscript.map((entry, i) => (
+              <span
+                key={`${entry.timestamp}-${i}`}
+                className={`${i === currentUserIndex ? "font-bold" : "font-normal"} text-sm`}
+              >
+                {entry.text}
+              </span>
+            ))}
+          </div>
+        </div>
         <div className="rounded-md border border-white/20 bg-black/20 p-2 text-xs">
-          <div className="mb-2 font-semibold tracking-wide uppercase opacity-80">Tool status</div>
+          <div className="mb-2 font-semibold tracking-wide uppercase opacity-80">Tool status bar</div>
           {orderedToolStatuses.length === 0 && (
-            <div className="opacity-70">No tool activity yet.</div>
+            <div className="opacity-70">No tool status yet.</div>
           )}
           {orderedToolStatuses.length > 0 && (
-            <div className="flex flex-col gap-2">
+            <div className="flex gap-2 overflow-x-auto pb-1">
               {orderedToolStatuses.map((status) => {
                 const details = status.status === "running"
                   ? status.triggerText
@@ -55,7 +102,10 @@ export const TextDisplay:FC<TextDisplayProps> = ({
                     : status.error;
 
                 return (
-                  <div key={`status-${status.tool}`} className="rounded border border-white/10 bg-black/20 p-2">
+                  <div
+                    key={`status-${status.tool}`}
+                    className="min-w-[220px] rounded border border-white/10 bg-black/20 p-2"
+                  >
                     <div className="flex items-center justify-between gap-2">
                       <div className="font-medium">{status.tool}</div>
                       <div className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wide ${statusClass(status.status)}`}>
@@ -69,32 +119,6 @@ export const TextDisplay:FC<TextDisplayProps> = ({
               })}
             </div>
           )}
-          {recentToolEvents.length > 0 && (
-            <div className="mt-3 border-t border-white/10 pt-2">
-              <div className="mb-2 font-semibold tracking-wide uppercase opacity-80">Recent activity</div>
-              <div className="flex flex-col gap-1">
-                {recentToolEvents.map((event, i) => (
-                  <div key={`${event.tool}-${event.phase}-${event.timestamp}-${i}`} className="rounded border border-white/10 bg-black/20 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>{event.tool}</div>
-                      <div className="opacity-70">{event.phase}</div>
-                    </div>
-                    <div className="opacity-60">{new Date(event.timestamp).toLocaleTimeString()}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="rounded-md border border-white/20 bg-black/10 p-2 min-h-[120px]">
-        {text.map((t, i) => (
-          <span
-            key={i}
-            className={`${i === currentIndex ? "font-bold" : "font-normal"}`}
-          >
-            {t}
-          </span>
-        ))}
         </div>
       </div>
     </div>

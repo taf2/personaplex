@@ -6,8 +6,9 @@ import { type ThemeType } from "../../hooks/useSystemTheme";
 type ServerAudioProps = {
   setGetAudioStats: (getAudioStats: () => AudioStats) => void;
   theme: ThemeType;
+  className?: string;
 };
-export const ServerAudio: FC<ServerAudioProps> = ({ setGetAudioStats, theme }) => {
+export const ServerAudio: FC<ServerAudioProps> = ({ setGetAudioStats, theme, className }) => {
   const { analyser, hasCriticalDelay, setHasCriticalDelay } = useServerAudio({
     setGetAudioStats,
   });
@@ -27,7 +28,7 @@ export const ServerAudio: FC<ServerAudioProps> = ({ setGetAudioStats, theme }) =
           </button>
         </div>
       )}
-      <div className="server-audio h-4/6 aspect-square" ref={containerRef}>
+      <div className={className ?? "h-full w-full"} ref={containerRef}>
         <ServerVisualizer analyser={analyser.current} parent={containerRef} theme={theme}/>
       </div>
     </>
