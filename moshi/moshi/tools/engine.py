@@ -70,6 +70,13 @@ class ToolIntentEngine:
         self._tool_list_str = "\n".join(tool_lines)
         self._tool_names = set(self.tools.keys())
 
+        # Build the system prompt suffix for Moshi
+        numbered = [f"{i}. {t.name} - {t.description}" for i, t in enumerate(self.tools.values(), 1)]
+        self.system_prompt_suffix = (
+            " You can use tools by announcing your intent to use any of the following tools: "
+            + ", ".join(numbered)
+        )
+
         # Load model on a separate CUDA stream
         logger.info("Loading intent model: %s", model_id)
         from transformers import AutoModelForCausalLM, AutoTokenizer

@@ -170,7 +170,10 @@ class ServerState:
                 self.lm_gen.load_voice_prompt_embeddings(voice_prompt_path)
             else:
                 self.lm_gen.load_voice_prompt(voice_prompt_path)
-        self.lm_gen.text_prompt_tokens = self.text_tokenizer.encode(wrap_with_system_tags(request.query["text_prompt"])) if len(request.query["text_prompt"]) > 0 else None
+        text_prompt = request.query["text_prompt"]
+        if text_prompt and self.tool_engine is not None:
+            text_prompt = text_prompt + self.tool_engine.system_prompt_suffix
+        self.lm_gen.text_prompt_tokens = self.text_tokenizer.encode(wrap_with_system_tags(text_prompt)) if len(text_prompt) > 0 else None
         seed = int(request["seed"]) if "seed" in request.query else None
 
         async def recv_loop():
@@ -262,8 +265,8 @@ class ServerState:
                     await ws.send_bytes(b"\x01" + msg)
 
         clog.log("info", "accepted connection")
-        if len(request.query["text_prompt"]) > 0:
-            clog.log("info", f"text prompt: {request.query['text_prompt']}")
+        if len(text_prompt) > 0:
+            clog.log("info", f"text prompt: {text_prompt}")
         if len(request.query["voice_prompt"]) > 0:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
@@ -494,8 +497,11 @@ def main():
                 dtype=dtype_map[args.intent_model_dtype],
                 min_tokens=args.intent_min_tokens,
             )
-            logger.info("Tool engine loaded with %d tools: %s",
-                        len(tools), [t.name for t in tools])
+            logger.info("Tool engine loaded with %d tool(s):", len(tools))
+            for t in tools:
+                logger.info("  [%s] %s → %s",
+                            t.name, t.description,
+                            t.executor.command if t.executor else "(no executor)")
         else:
             logger.warning("No tools found in %s", args.tools_dir)
 

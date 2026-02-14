@@ -29,6 +29,9 @@ export const encodeMessage = (message: WSMessage): Uint8Array => {
       return new Uint8Array([0x05, ...new TextEncoder().encode(message.data)]);
     case "ping":
       return new Uint8Array([0x06]);
+    case "tool_event":
+      // Server→client only, never encoded by client
+      return new Uint8Array([0x07]);
   }
 };
 

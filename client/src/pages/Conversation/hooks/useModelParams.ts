@@ -8,7 +8,7 @@ export const DEFAULT_AUDIO_TOPK = 250;
 export const DEFAULT_PAD_MULT = 0;
 export const DEFAULT_REPETITION_PENALTY_CONTEXT = 64;
 export const DEFAULT_REPETITION_PENALTY = 1.0;
-export const DEFAULT_TEXT_PROMPT = "You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way.";
+export const DEFAULT_TEXT_PROMPT = "You are a helpful smart home assistant named Jane. You can control the lights in the room and tell the time. When someone asks you to turn on or off the lights, confirm that you are doing it. When someone asks for the time, tell them you are checking. Be conversational and friendly.";
 export const DEFAULT_VOICE_PROMPT = "NATF0.pt";
 export const DEFAULT_RANDOM_SEED = -1;
 
