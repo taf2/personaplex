@@ -5,6 +5,7 @@ executor:
   type: shell
   command: "date '+%I:%M %p'"
   timeout_seconds: 5
+result_prefix: "The current time is "
 examples:
   - "What time is it?"
   - "Can you tell me the time?"

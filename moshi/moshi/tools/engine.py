@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
@@ -61,6 +62,10 @@ class ToolIntentEngine:
         self._executor = ShellExecutor()
         self._checking = asyncio.Lock()
         self._thread_pool = ThreadPoolExecutor(max_workers=1)
+        self._lm_gen = None
+        self._text_tokenizer = None
+        self._tool_cooldowns: dict[str, float] = {}  # tool_name → monotonic timestamp
+        self._cooldown_seconds: float = 15.0
 
         # Build prompt template
         tool_lines = []
@@ -90,13 +95,28 @@ class ToolIntentEngine:
         self._cuda_stream = torch.cuda.Stream(device=self._device) if self._device.type == "cuda" else None
         logger.info("Intent model loaded on %s", device)
 
+    def set_model_refs(self, lm_gen, text_tokenizer) -> None:
+        """Wire in the LMGen and text tokenizer for result injection."""
+        self._lm_gen = lm_gen
+        self._text_tokenizer = text_tokenizer
+
     def _build_prompt(self, text: str) -> str:
         return (
-            "You are a tool-calling intent classifier. Given conversation text from a\n"
-            "speech AI assistant, determine if a tool should be called.\n\n"
+            "You are a tool-calling intent classifier. The following is text spoken by "
+            "an AI voice assistant during a live conversation.\n\n"
+            "Determine if the assistant is ANNOUNCING that it will perform a specific "
+            "tool action RIGHT NOW.\n\n"
+            "Rules:\n"
+            "- ONLY return a tool name if the assistant is clearly stating it will "
+            "perform the action (e.g. 'Let me check the time', 'I'll look that up').\n"
+            "- Return \"none\" if the assistant is merely mentioning a capability, "
+            "greeting the user, discussing a topic, reporting a result, or asking "
+            "a question.\n"
+            "- Return \"none\" if the text contains a time value like '12:30 PM' — "
+            "that means the tool already ran.\n\n"
             f"Available tools:\n{self._tool_list_str}\n\n"
-            f'Conversation text: "{text}"\n\n'
-            'Respond with ONLY the tool name if a tool should be called, or "none".'
+            f'Assistant speech: "{text}"\n\n'
+            'Respond with ONLY the tool name or "none".'
         )
 
     def _infer(self, text: str) -> str | None:
@@ -144,8 +164,16 @@ class ToolIntentEngine:
             if tool_name is None:
                 return
 
+            # Per-tool cooldown: skip if this tool fired recently.
+            now = time.monotonic()
+            last_fired = self._tool_cooldowns.get(tool_name, 0.0)
+            if now - last_fired < self._cooldown_seconds:
+                clog.log("info", f"Tool {tool_name} on cooldown, skipping")
+                return
+
             tool = self.tools[tool_name]
             clog.log("info", f"Tool intent detected: {tool_name}")
+            self._tool_cooldowns[tool_name] = now
 
             await send_tool_event(ws, encode_tool_invoked(tool_name, text))
 
@@ -172,6 +200,14 @@ class ToolIntentEngine:
                         result.duration_ms,
                     ),
                 )
+
+                # Inject tool result into Moshi's text token queue so it
+                # speaks the result in its own voice.
+                if success and tool.inject_result and result.stdout.strip() and self._lm_gen is not None:
+                    result_text = tool.result_prefix + result.stdout.strip()
+                    tokens = self._text_tokenizer.encode(result_text)
+                    self._lm_gen.inject_text_tokens(tokens)
+                    clog.log("info", f"Injected {len(tokens)} text tokens for tool result")
 
 
 # Python 3.10 compat — contextlib.nullcontext works but import it properly

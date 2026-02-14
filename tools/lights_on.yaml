@@ -5,6 +5,7 @@ executor:
   type: shell
   command: "openrgb --device 4 --mode 'Rainbow wave'"
   timeout_seconds: 10
+inject_result: false
 examples:
   - "Turn on the lights"
   - "Can you switch the lights on?"

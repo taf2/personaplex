@@ -29,6 +29,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -675,6 +676,7 @@ class LMGen(StreamingModule[_LMGenState]):
         self.audio_silence_frame_cnt = audio_silence_frame_cnt
         self.voice_prompt = None
         self.zero_text_code = 3
+        self._pending_text_tokens: deque[int] = deque()
         self._frame_rate = frame_rate
         self._sample_rate = sample_rate
         self._frame_size = int(self._sample_rate / self._frame_rate)
@@ -722,7 +724,28 @@ class LMGen(StreamingModule[_LMGenState]):
         graphed_depth = CUDAGraphed(self.depformer_step, disable=disable)
 
         return _LMGenState(cache, provided, initial, graphed_main, graphed_embeddings, graphed_depth)
-    
+
+    def inject_text_tokens(self, tokens: list[int], pad_frames: int = 4) -> None:
+        """Inject text tokens into the pending queue for Moshi to speak.
+
+        Prepends and appends a few PAD tokens to create brief pauses around
+        the injected text, smoothing the transition if Moshi is mid-sentence.
+        """
+        for _ in range(pad_frames):
+            self._pending_text_tokens.append(self.zero_text_code)
+        self._pending_text_tokens.extend(tokens)
+        for _ in range(pad_frames):
+            self._pending_text_tokens.append(self.zero_text_code)
+
+    @property
+    def is_injecting(self) -> bool:
+        """True while the pending text token queue is being drained."""
+        return len(self._pending_text_tokens) > 0
+
+    def reset_streaming(self):
+        self._pending_text_tokens.clear()
+        super().reset_streaming()
+
     @torch.no_grad()
     def prepare_step_input(self,
                            input_tokens: torch.Tensor=None,
@@ -817,6 +840,10 @@ class LMGen(StreamingModule[_LMGenState]):
         -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         state = self._streaming_state
         lm_model = self.lm_model
+        # Auto-consume from the pending text token queue when no explicit
+        # text_token is provided (used for tool result injection).
+        if text_token is None and self._pending_text_tokens:
+            text_token = self._pending_text_tokens.popleft()
         prepared_inputs = self.prepare_step_input(
             input_tokens, moshi_tokens, text_token,
         )

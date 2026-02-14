@@ -19,6 +19,8 @@ class ToolDefinition:
     enabled: bool = True
     executor: ToolExecutor | None = None
     examples: list[str] = field(default_factory=list)
+    result_prefix: str = ""
+    inject_result: bool = True
 
 
 def load_tools(directory: str) -> list[ToolDefinition]:
@@ -58,6 +60,8 @@ def load_tools(directory: str) -> list[ToolDefinition]:
             enabled=data.get("enabled", True),
             executor=executor,
             examples=data.get("examples", []),
+            result_prefix=data.get("result_prefix", ""),
+            inject_result=data.get("inject_result", True),
         )
         tools.append(tool)
 

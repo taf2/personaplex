@@ -210,6 +210,7 @@ class ServerState:
         async def opus_loop():
             all_pcm_data = None
             text_accum = TextAccumulator(min_tokens=self.tool_engine.min_tokens) if self.tool_engine is not None else None
+            was_injecting = False
 
             while True:
                 if close:
@@ -246,12 +247,21 @@ class ServerState:
                             msg = b"\x02" + bytes(_text, encoding="utf8")
                             await ws.send_bytes(msg)
                             if text_accum is not None:
-                                text_accum.accumulate_token(_text)
-                                if text_accum.should_check():
-                                    sentence = text_accum.flush()
-                                    asyncio.create_task(
-                                        self.tool_engine.check_and_execute(sentence, ws, clog)
-                                    )
+                                if self.lm_gen.is_injecting:
+                                    was_injecting = True
+                                else:
+                                    if was_injecting:
+                                        # Injection just finished — discard any
+                                        # stale context so the result text
+                                        # doesn't re-trigger intent detection.
+                                        text_accum.flush()
+                                        was_injecting = False
+                                    text_accum.accumulate_token(_text)
+                                    if text_accum.should_check():
+                                        sentence = text_accum.flush()
+                                        asyncio.create_task(
+                                            self.tool_engine.check_and_execute(sentence, ws, clog)
+                                        )
                         else:
                             text_token_map = ['EPAD', 'BOS', 'EOS', 'PAD']
 
@@ -515,6 +525,8 @@ def main():
         save_voice_prompt_embeddings=False,
         tool_engine=tool_engine,
     )
+    if tool_engine is not None:
+        tool_engine.set_model_refs(state.lm_gen, text_tokenizer)
     logger.info("warming up the model")
     state.warmup()
     app = web.Application()

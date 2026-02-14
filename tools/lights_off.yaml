@@ -5,6 +5,7 @@ executor:
   type: shell
   command: "openrgb --mode static --color 000000"
   timeout_seconds: 10
+inject_result: false
 examples:
   - "Turn off the lights"
   - "Can you switch the lights off?"
