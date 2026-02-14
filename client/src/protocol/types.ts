@@ -3,7 +3,8 @@ export type MessageType =
   | "audio"
   | "text"
   | "control"
-  | "metadata";
+  | "metadata"
+  | "tool_event";
 
 export const VERSIONS_MAP = {
   0: 0b00000000,
@@ -46,7 +47,22 @@ export type WSMessage =
   | {
     type:"ping";
   }
+  | {
+    type: "tool_event";
+    data: ToolEvent;
+  }
 
+export interface ToolEvent {
+  event: "tool_invoked" | "tool_completed" | "tool_error";
+  tool: string;
+  trigger_text?: string;
+  timestamp?: number;
+  success?: boolean;
+  return_code?: number;
+  stdout?: string;
+  duration_ms?: number;
+  error?: string;
+}
 
 export type SocketStatus = "connected" | "disconnected" | "connecting";
 

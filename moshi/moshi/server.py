@@ -47,6 +47,7 @@ import random
 
 from .client_utils import make_log, colorize
 from .models import loaders, MimiModel, LMModel, LMGen
+from .tools import load_tools, ToolIntentEngine, TextAccumulator
 from .utils.connection import create_ssl_context, get_lan_ip
 from .utils.logging import setup_logger, ColorizedLog
 
@@ -96,12 +97,14 @@ class ServerState:
 
     def __init__(self, mimi: MimiModel, other_mimi: MimiModel, text_tokenizer: sentencepiece.SentencePieceProcessor,
                  lm: LMModel, device: str | torch.device, voice_prompt_dir: str | None = None,
-                 save_voice_prompt_embeddings: bool = False):
+                 save_voice_prompt_embeddings: bool = False,
+                 tool_engine: Optional[ToolIntentEngine] = None):
         self.mimi = mimi
         self.other_mimi = other_mimi
         self.text_tokenizer = text_tokenizer
         self.device = device
         self.voice_prompt_dir = voice_prompt_dir
+        self.tool_engine = tool_engine
         self.frame_size = int(self.mimi.sample_rate / self.mimi.frame_rate)
         self.lm_gen = LMGen(lm,
                             audio_silence_frame_cnt=int(0.5 * self.mimi.frame_rate),
@@ -203,6 +206,7 @@ class ServerState:
 
         async def opus_loop():
             all_pcm_data = None
+            text_accum = TextAccumulator(min_tokens=self.tool_engine.min_tokens) if self.tool_engine is not None else None
 
             while True:
                 if close:
@@ -238,6 +242,13 @@ class ServerState:
                             _text = _text.replace("▁", " ")
                             msg = b"\x02" + bytes(_text, encoding="utf8")
                             await ws.send_bytes(msg)
+                            if text_accum is not None:
+                                text_accum.accumulate_token(_text)
+                                if text_accum.should_check():
+                                    sentence = text_accum.flush()
+                                    asyncio.create_task(
+                                        self.tool_engine.check_and_execute(sentence, ws, clog)
+                                    )
                         else:
                             text_token_map = ['EPAD', 'BOS', 'EOS', 'PAD']
 
@@ -390,6 +401,31 @@ def main():
             "that contains valid key.pem and cert.pem files"
         )
     )
+    parser.add_argument(
+        "--tools-dir",
+        type=str,
+        default=None,
+        help="Path to directory containing tool YAML definitions. Disables tools if not set.",
+    )
+    parser.add_argument(
+        "--intent-model",
+        type=str,
+        default="google/gemma-3-1b-it",
+        help="HuggingFace model ID for the intent classifier (default: google/gemma-3-1b-it).",
+    )
+    parser.add_argument(
+        "--intent-model-dtype",
+        type=str,
+        default="bfloat16",
+        choices=["bfloat16", "float16"],
+        help="Dtype for intent model (default: bfloat16).",
+    )
+    parser.add_argument(
+        "--intent-min-tokens",
+        type=int,
+        default=8,
+        help="Minimum tokens before checking intent (default: 8).",
+    )
 
     args = parser.parse_args()
     args.voice_prompt_dir = _get_voice_prompt_dir(
@@ -445,6 +481,24 @@ def main():
     lm = loaders.get_moshi_lm(args.moshi_weight, device=args.device, cpu_offload=args.cpu_offload)
     lm.eval()
     logger.info("moshi loaded")
+    # Load tool intent engine if tools directory provided
+    tool_engine = None
+    if args.tools_dir is not None:
+        tools = load_tools(args.tools_dir)
+        if tools:
+            dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
+            tool_engine = ToolIntentEngine(
+                tools=tools,
+                model_id=args.intent_model,
+                device=args.device,
+                dtype=dtype_map[args.intent_model_dtype],
+                min_tokens=args.intent_min_tokens,
+            )
+            logger.info("Tool engine loaded with %d tools: %s",
+                        len(tools), [t.name for t in tools])
+        else:
+            logger.warning("No tools found in %s", args.tools_dir)
+
     state = ServerState(
         mimi=mimi,
         other_mimi=other_mimi,
@@ -453,6 +507,7 @@ def main():
         device=args.device,
         voice_prompt_dir=args.voice_prompt_dir,
         save_voice_prompt_embeddings=False,
+        tool_engine=tool_engine,
     )
     logger.info("warming up the model")
     state.warmup()

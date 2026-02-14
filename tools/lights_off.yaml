@@ -1,0 +1,10 @@
+name: lights_off
+description: "Turn off the lights. Use when the user asks to turn off, switch off, or dim the lights."
+enabled: true
+executor:
+  type: shell
+  command: "openrgb --mode static --color 000000"
+  timeout_seconds: 10
+examples:
+  - "Turn off the lights"
+  - "Can you switch the lights off?"

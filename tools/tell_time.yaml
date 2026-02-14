@@ -1,0 +1,10 @@
+name: tell_time
+description: "Tell the current time. Use when the user asks what time it is, or asks about the current time."
+enabled: true
+executor:
+  type: shell
+  command: "date '+%I:%M %p'"
+  timeout_seconds: 5
+examples:
+  - "What time is it?"
+  - "Can you tell me the time?"

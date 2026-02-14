@@ -1,0 +1,10 @@
+name: lights_on
+description: "Turn on the lights. Use when the user asks to turn on, switch on, or brighten the lights."
+enabled: true
+executor:
+  type: shell
+  command: "openrgb --device 4 --mode 'Rainbow wave'"
+  timeout_seconds: 10
+examples:
+  - "Turn on the lights"
+  - "Can you switch the lights on?"
