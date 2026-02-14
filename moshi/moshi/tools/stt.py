@@ -38,7 +38,7 @@ def _resolve_soundfile_backend():
 
 
 class UserSTTEngine:
-    """Streaming-friendly user STT engine backed by Voxtral."""
+    """Streaming-friendly user STT engine backed by Voxtral or Qwen3-ASR."""
 
     def __init__(
         self,
@@ -67,7 +67,92 @@ class UserSTTEngine:
         self._thread_pool = ThreadPoolExecutor(max_workers=1)
         self._lock = asyncio.Lock()
         self._last_transcript: str = ""
+        self._backend = "voxtral"
+        self._target_sample_rate = 16000
+        self._processor = None
+        self._model = None
+        self._qwen_model = None
 
+        model_lc = model_id.lower()
+        if "qwen3-asr" in model_lc:
+            self._backend = "qwen3_asr"
+            self._load_qwen_model()
+        else:
+            self._load_voxtral_model()
+
+    def _qwen_language(self) -> str | None:
+        if not self.language:
+            return None
+        normalized = self.language.strip().lower()
+        mapping = {
+            "en": "English",
+            "english": "English",
+            "zh": "Chinese",
+            "chinese": "Chinese",
+            "yue": "Cantonese",
+            "cantonese": "Cantonese",
+            "ja": "Japanese",
+            "japanese": "Japanese",
+            "ko": "Korean",
+            "korean": "Korean",
+            "es": "Spanish",
+            "spanish": "Spanish",
+            "fr": "French",
+            "french": "French",
+            "de": "German",
+            "german": "German",
+            "it": "Italian",
+            "italian": "Italian",
+            "pt": "Portuguese",
+            "portuguese": "Portuguese",
+            "ru": "Russian",
+            "russian": "Russian",
+            "tr": "Turkish",
+            "turkish": "Turkish",
+            "hi": "Hindi",
+            "hindi": "Hindi",
+            "th": "Thai",
+            "thai": "Thai",
+            "vi": "Vietnamese",
+            "vietnamese": "Vietnamese",
+            "id": "Indonesian",
+            "indonesian": "Indonesian",
+            "ar": "Arabic",
+            "arabic": "Arabic",
+            "ms": "Malay",
+            "malay": "Malay",
+            "nl": "Dutch",
+            "dutch": "Dutch",
+            "sv": "Swedish",
+            "swedish": "Swedish",
+            "da": "Danish",
+            "danish": "Danish",
+            "fi": "Finnish",
+            "finnish": "Finnish",
+            "pl": "Polish",
+            "polish": "Polish",
+            "cs": "Czech",
+            "czech": "Czech",
+            "fil": "Filipino",
+            "filipino": "Filipino",
+            "fa": "Persian",
+            "persian": "Persian",
+            "el": "Greek",
+            "greek": "Greek",
+            "ro": "Romanian",
+            "romanian": "Romanian",
+            "hu": "Hungarian",
+            "hungarian": "Hungarian",
+            "mk": "Macedonian",
+            "macedonian": "Macedonian",
+        }
+        mapped = mapping.get(normalized)
+        if mapped is None:
+            logger.warning("Unsupported Qwen language '%s', falling back to auto language detection", self.language)
+            return None
+        return mapped
+
+    def _load_voxtral_model(self) -> None:
         from transformers import AutoProcessor
 
         try:
@@ -77,14 +162,14 @@ class UserSTTEngine:
                 "Voxtral classes are unavailable. Please install transformers with Voxtral support (>= 4.57)."
             ) from exc
 
-        logger.info("Loading user STT model: %s", model_id)
+        logger.info("Loading user STT model: %s (backend=voxtral)", self.model_id)
         # Work around a transformers Processor __repr__/deepcopy crash seen
         # with some Voxtral tokenizer artifacts on startup.
         from transformers.processing_utils import ProcessorMixin
         original_repr = ProcessorMixin.__repr__
         ProcessorMixin.__repr__ = lambda self: f"{self.__class__.__name__}()"
         try:
-            self._processor = AutoProcessor.from_pretrained(model_id, use_fast=False)
+            self._processor = AutoProcessor.from_pretrained(self.model_id, use_fast=False)
         finally:
             ProcessorMixin.__repr__ = original_repr
 
@@ -105,11 +190,39 @@ class UserSTTEngine:
         processor_sr = getattr(getattr(self._processor, "feature_extractor", None), "sampling_rate", None)
         self._target_sample_rate = int(processor_sr) if processor_sr is not None else 16000
         self._model = VoxtralForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype=dtype,
+            self.model_id,
+            torch_dtype=self._dtype,
         ).to(self._device)
         self._model.eval()
-        logger.info("User STT model loaded on %s (expected_sr=%d)", self._device, self._target_sample_rate)
+        logger.info("User STT model loaded on %s (backend=voxtral, expected_sr=%d)", self._device, self._target_sample_rate)
+
+    def _load_qwen_model(self) -> None:
+        try:
+            from qwen_asr import Qwen3ASRModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Qwen3-ASR backend requested but `qwen-asr` is not installed. "
+                "Install it with: /var/db/work/personaplex/env/bin/pip install qwen-asr"
+            ) from exc
+
+        device_map = "cpu"
+        if self._device.type == "cuda":
+            device_map = f"cuda:{self._device.index if self._device.index is not None else 0}"
+
+        logger.info("Loading user STT model: %s (backend=qwen3_asr)", self.model_id)
+        try:
+            self._qwen_model = Qwen3ASRModel.from_pretrained(
+                self.model_id,
+                dtype=self._dtype,
+                device_map=device_map,
+                max_inference_batch_size=1,
+                max_new_tokens=self.max_new_tokens,
+            )
+        except TypeError:
+            # Older qwen-asr builds may not accept dtype/device_map kwargs.
+            self._qwen_model = Qwen3ASRModel.from_pretrained(self.model_id)
+        self._target_sample_rate = 16000
+        logger.info("User STT model loaded on %s (backend=qwen3_asr, expected_sr=%d)", self._device, self._target_sample_rate)
 
     def window_samples(self, sample_rate: int) -> int:
         return max(1, int(self.chunk_seconds * sample_rate))
@@ -139,6 +252,23 @@ class UserSTTEngine:
             audio = self._resample_linear(audio, sr, self._target_sample_rate)
             sr = self._target_sample_rate
 
+        if self._backend == "qwen3_asr":
+            qwen_language = self._qwen_language()
+            results = self._qwen_model.transcribe(  # type: ignore[union-attr]
+                audio=(audio, sr),
+                language=qwen_language,
+            )
+            if not results:
+                return None
+            first = results[0] if isinstance(results, list) else results
+            if isinstance(first, dict):
+                transcript = first.get("text", "")
+            else:
+                transcript = getattr(first, "text", "")
+            transcript = " ".join(str(transcript).strip().split())
+            return transcript or None
+
+        # Voxtral path
         kwargs = {
             "audio": [audio],
             "model_id": self.model_id,

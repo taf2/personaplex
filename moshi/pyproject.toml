@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "transformers>=4.45.0",
     "mistral-common>=1.9.1",
+    "qwen-asr>=0.0.6",
 ]
 authors = [{name="Rajarshi Roy", email="rajarshir@nvidia.com"}]
 maintainers = [{name="Rajarshi Roy", email="rajarshir@nvidia.com"}]
