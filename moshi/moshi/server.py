@@ -47,7 +47,7 @@ import random
 
 from .client_utils import make_log, colorize
 from .models import loaders, MimiModel, LMModel, LMGen
-from .tools import load_tools, ToolIntentEngine, TextAccumulator
+from .tools import load_tools, ToolIntentEngine, TextAccumulator, UserSTTEngine
 from .utils.connection import create_ssl_context, get_lan_ip
 from .utils.logging import setup_logger, ColorizedLog
 
@@ -98,13 +98,15 @@ class ServerState:
     def __init__(self, mimi: MimiModel, other_mimi: MimiModel, text_tokenizer: sentencepiece.SentencePieceProcessor,
                  lm: LMModel, device: str | torch.device, voice_prompt_dir: str | None = None,
                  save_voice_prompt_embeddings: bool = False,
-                 tool_engine: Optional[ToolIntentEngine] = None):
+                 tool_engine: Optional[ToolIntentEngine] = None,
+                 user_stt_engine: Optional[UserSTTEngine] = None):
         self.mimi = mimi
         self.other_mimi = other_mimi
         self.text_tokenizer = text_tokenizer
         self.device = device
         self.voice_prompt_dir = voice_prompt_dir
         self.tool_engine = tool_engine
+        self.user_stt_engine = user_stt_engine
         self.frame_size = int(self.mimi.sample_rate / self.mimi.frame_rate)
         self.lm_gen = LMGen(lm,
                             audio_silence_frame_cnt=int(0.5 * self.mimi.frame_rate),
@@ -207,7 +209,25 @@ class ServerState:
                 close = True
                 clog.log("info", "connection closed")
 
+        async def run_user_stt_chunk(pcm_chunk: np.ndarray):
+            if self.user_stt_engine is None or self.tool_engine is None:
+                return
+            transcript = await self.user_stt_engine.transcribe(pcm_chunk, self.mimi.sample_rate)
+            if not transcript:
+                return
+            clog.log("info", f"user transcript: {transcript}")
+            task = await self.tool_engine.check_user_text_and_execute(
+                transcript,
+                ws,
+                clog,
+                cooldowns=session_tool_cooldowns,
+            )
+            if task is not None:
+                tool_tasks.add(task)
+                task.add_done_callback(tool_tasks.discard)
+
         async def opus_loop():
+            nonlocal user_stt_pcm_data
             all_pcm_data = None
             text_accum = TextAccumulator(min_tokens=self.tool_engine.min_tokens) if self.tool_engine is not None else None
             was_injecting = False
@@ -219,6 +239,21 @@ class ServerState:
                 pcm = opus_reader.read_pcm()
                 if pcm.shape[-1] == 0:
                     continue
+                if self.user_stt_engine is not None and self.tool_engine is not None:
+                    if user_stt_pcm_data.shape[-1] == 0:
+                        user_stt_pcm_data = pcm.copy()
+                    else:
+                        user_stt_pcm_data = np.concatenate((user_stt_pcm_data, pcm))
+                    stt_window = self.user_stt_engine.window_samples(self.mimi.sample_rate)
+                    stt_stride = self.user_stt_engine.stride_samples(self.mimi.sample_rate)
+                    while user_stt_pcm_data.shape[-1] >= stt_window:
+                        if len(user_stt_tasks) >= 1:
+                            break
+                        stt_chunk = user_stt_pcm_data[:stt_window].copy()
+                        user_stt_pcm_data = user_stt_pcm_data[stt_stride:]
+                        stt_task = asyncio.create_task(run_user_stt_chunk(stt_chunk))
+                        user_stt_tasks.add(stt_task)
+                        stt_task.add_done_callback(user_stt_tasks.discard)
                 if all_pcm_data is None:
                     all_pcm_data = pcm
                 else:
@@ -280,13 +315,21 @@ class ServerState:
                             text_token_map = ['EPAD', 'BOS', 'EOS', 'PAD']
 
         async def send_loop():
+            nonlocal close
             while True:
                 if close:
                     return
                 await asyncio.sleep(0.001)
                 msg = opus_writer.read_bytes()
                 if len(msg) > 0:
-                    await ws.send_bytes(b"\x01" + msg)
+                    if ws.closed:
+                        close = True
+                        return
+                    try:
+                        await ws.send_bytes(b"\x01" + msg)
+                    except (ConnectionResetError, aiohttp.ClientConnectionError):
+                        close = True
+                        return
 
         clog.log("info", "accepted connection")
         if len(text_prompt) > 0:
@@ -295,6 +338,8 @@ class ServerState:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
         tool_tasks: set[asyncio.Task] = set()
+        user_stt_tasks: set[asyncio.Task] = set()
+        user_stt_pcm_data = np.zeros((0,), dtype=np.float32)
         session_tool_cooldowns: dict[str, float] = {}
         async with self.lock:
             if seed is not None and seed != -1:
@@ -347,6 +392,11 @@ class ServerState:
                         task.cancel()
                     await asyncio.gather(*tool_tasks, return_exceptions=True)
                     tool_tasks.clear()
+                if user_stt_tasks:
+                    for task in list(user_stt_tasks):
+                        task.cancel()
+                    await asyncio.gather(*user_stt_tasks, return_exceptions=True)
+                    user_stt_tasks.clear()
                 await ws.close()
                 clog.log("info", "session closed")
                 # await asyncio.gather(opus_loop(), recv_loop(), send_loop())
@@ -460,6 +510,43 @@ def main():
         default=8,
         help="Minimum tokens before checking intent (default: 8).",
     )
+    parser.add_argument(
+        "--user-stt-model",
+        type=str,
+        default=None,
+        help="Optional HuggingFace Voxtral model ID to transcribe user speech for tool intent.",
+    )
+    parser.add_argument(
+        "--user-stt-dtype",
+        type=str,
+        default="bfloat16",
+        choices=["bfloat16", "float16", "float32"],
+        help="Dtype for user STT model (default: bfloat16).",
+    )
+    parser.add_argument(
+        "--user-stt-language",
+        type=str,
+        default="en",
+        help="Language code for user STT transcription request (default: en).",
+    )
+    parser.add_argument(
+        "--user-stt-chunk-seconds",
+        type=float,
+        default=2.0,
+        help="User STT chunk size in seconds (default: 2.0).",
+    )
+    parser.add_argument(
+        "--user-stt-stride-seconds",
+        type=float,
+        default=1.0,
+        help="User STT stride size in seconds (default: 1.0).",
+    )
+    parser.add_argument(
+        "--user-stt-max-new-tokens",
+        type=int,
+        default=128,
+        help="Max generated tokens per user STT chunk (default: 128).",
+    )
 
     args = parser.parse_args()
     args.voice_prompt_dir = _get_voice_prompt_dir(
@@ -517,15 +604,16 @@ def main():
     logger.info("moshi loaded")
     # Load tool intent engine if tools directory provided
     tool_engine = None
+    user_stt_engine = None
     if args.tools_dir is not None:
         tools = load_tools(args.tools_dir)
         if tools:
-            dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
+            intent_dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
             tool_engine = ToolIntentEngine(
                 tools=tools,
                 model_id=args.intent_model,
                 device=args.device,
-                dtype=dtype_map[args.intent_model_dtype],
+                dtype=intent_dtype_map[args.intent_model_dtype],
                 min_tokens=args.intent_min_tokens,
             )
             logger.info("Tool engine loaded with %d tool(s):", len(tools))
@@ -536,6 +624,30 @@ def main():
         else:
             logger.warning("No tools found in %s", args.tools_dir)
 
+    if args.user_stt_model is not None:
+        if tool_engine is None:
+            logger.warning("User STT model requested, but tools are disabled; skipping user STT.")
+        else:
+            stt_dtype_map = {
+                "bfloat16": torch.bfloat16,
+                "float16": torch.float16,
+                "float32": torch.float32,
+            }
+            try:
+                user_stt_engine = UserSTTEngine(
+                    model_id=args.user_stt_model,
+                    device=args.device,
+                    dtype=stt_dtype_map[args.user_stt_dtype],
+                    language=args.user_stt_language,
+                    chunk_seconds=args.user_stt_chunk_seconds,
+                    stride_seconds=args.user_stt_stride_seconds,
+                    max_new_tokens=args.user_stt_max_new_tokens,
+                )
+                logger.info("User STT engine enabled: %s", args.user_stt_model)
+            except Exception:
+                logger.exception("Failed to initialize user STT engine; continuing without user STT")
+                user_stt_engine = None
+
     state = ServerState(
         mimi=mimi,
         other_mimi=other_mimi,
@@ -545,6 +657,7 @@ def main():
         voice_prompt_dir=args.voice_prompt_dir,
         save_voice_prompt_embeddings=False,
         tool_engine=tool_engine,
+        user_stt_engine=user_stt_engine,
     )
     if tool_engine is not None:
         tool_engine.set_model_refs(state.lm_gen, text_tokenizer)

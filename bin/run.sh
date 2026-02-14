@@ -1,2 +1,1 @@
-#SSL_DIR=$(mktemp -d);  ./env/bin/python -m moshi.server --ssl "$SSL_DIR" --tools-dir ./tools --intent-model google/gemma-3-1b-it --intent-model-dtype bfloat16 --intent-min-tokens 8 --device cuda
-SSL_DIR=$(mktemp -d);  ./env/bin/python -m moshi.server --ssl "$SSL_DIR" --tools-dir ./tools --intent-model Qwen/Qwen2.5-3B-Instruct --intent-model-dtype bfloat16 --intent-min-tokens 8 --device cuda
+SSL_DIR=$(mktemp -d);  ./env/bin/python -m moshi.server --ssl "$SSL_DIR" --static ./client/dist --tools-dir ./tools --intent-model google/gemma-3-1b-it --intent-model-dtype bfloat16 --intent-min-tokens 8 --user-stt-model mistralai/Voxtral-Mini-3B-2507 --user-stt-dtype bfloat16 --user-stt-language en --user-stt-chunk-seconds 2.0 --user-stt-stride-seconds 1.0 --device cuda

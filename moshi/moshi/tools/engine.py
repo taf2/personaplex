@@ -109,7 +109,21 @@ class ToolIntentEngine:
         self._lm_gen = lm_gen
         self._text_tokenizer = text_tokenizer
 
-    def _build_prompt(self, text: str) -> str:
+    def _build_prompt(self, text: str, source: str = "assistant") -> str:
+        if source == "user":
+            return (
+                "You are a tool-calling intent classifier. The following is text spoken by "
+                "the USER during a live conversation with an assistant.\n\n"
+                "Determine if the user is requesting a tool action RIGHT NOW.\n\n"
+                "Rules:\n"
+                "- Return a tool name only if the user is clearly requesting the action now.\n"
+                "- Return \"none\" for chit-chat, vague discussion, or non-actionable references.\n"
+                "- Return \"none\" if the user is not asking for one of the listed tools.\n\n"
+                f"Available tools:\n{self._tool_list_str}\n\n"
+                f'User speech: "{text}"\n\n'
+                'Respond with ONLY the tool name or "none".'
+            )
+
         return (
             "You are a tool-calling intent classifier. The following is text spoken by "
             "an AI voice assistant during a live conversation.\n\n"
@@ -132,9 +146,9 @@ class ToolIntentEngine:
             'Respond with ONLY the tool name or "none".'
         )
 
-    def _infer(self, text: str) -> str | None:
+    def _infer(self, text: str, source: str = "assistant") -> str | None:
         """Run Gemma inference (blocking, meant for thread pool)."""
-        prompt = self._build_prompt(text)
+        prompt = self._build_prompt(text, source=source)
 
         messages = [{"role": "user", "content": prompt}]
         inputs = self._tokenizer.apply_chat_template(
@@ -206,6 +220,31 @@ class ToolIntentEngine:
 
         return None
 
+    def _fast_match_user_tool(self, text: str) -> str | None:
+        """Fast local heuristic on user transcript to avoid missing obvious intents."""
+        normalized = self._normalize_text(text)
+
+        if "tell_time" in self.tools:
+            if re.search(
+                r"\b(what time is it|what(?:'s| is) the time|tell me the time|current time|time now|time please)\b",
+                normalized,
+            ):
+                return "tell_time"
+
+        if "lights_on" in self.tools:
+            has_light = re.search(r"\b(light|lights|lamp|lamps|lighting)\b", normalized) is not None
+            has_on = re.search(r"\b(turn on|switch on|lights on|brighten|brighter)\b", normalized) is not None
+            if has_light and has_on:
+                return "lights_on"
+
+        if "lights_off" in self.tools:
+            has_light = re.search(r"\b(light|lights|lamp|lamps|lighting)\b", normalized) is not None
+            has_off = re.search(r"\b(turn off|switch off|lights off|dim|darker|darken)\b", normalized) is not None
+            if has_light and has_off:
+                return "lights_off"
+
+        return None
+
     def _passes_inferred_tool_guard(self, tool_name: str, text: str) -> bool:
         """Cheap lexical sanity check for inferred tools to reduce false positives."""
         normalized = self._normalize_text(text)
@@ -254,27 +293,26 @@ class ToolIntentEngine:
         ws: web.WebSocketResponse,
         clog,
         cooldown_map: dict[str, float],
+        source: str = "assistant",
     ) -> None:
-        if self._checking.locked():
-            return
-
         async with self._checking:
             loop = asyncio.get_running_loop()
             try:
-                tool_name = await loop.run_in_executor(self._thread_pool, self._infer, text)
+                tool_name = await loop.run_in_executor(self._thread_pool, self._infer, text, source)
             except Exception:
                 logger.exception("Intent inference failed")
                 return
 
             if tool_name is None:
+                clog.log("info", f"No inferred tool from {source} text")
                 return
 
             tool = self.tools[tool_name]
             if not self._passes_inferred_tool_guard(tool_name, text):
-                clog.log("info", f"Tool {tool_name} inferred but rejected by lexical guard")
+                clog.log("info", f"Tool {tool_name} inferred from {source} text but rejected by lexical guard")
                 return
             if tool.execution_mode == "blocking":
-                clog.log("info", f"Blocking tool {tool_name} detected in async path; executing async fallback")
+                clog.log("info", f"Blocking tool {tool_name} inferred from {source} text; executing fallback")
 
             if not self._consume_cooldown(tool_name, cooldown_map, clog):
                 return
@@ -347,10 +385,33 @@ class ToolIntentEngine:
         if not allow_async_fallback:
             return None
 
-        if self._checking.locked():
+        return asyncio.create_task(self._infer_and_execute_async(text, ws, clog, cooldown_map, source="assistant"))
+
+    async def check_user_text_and_execute(
+        self,
+        user_text: str,
+        ws: web.WebSocketResponse,
+        clog,
+        cooldowns: dict[str, float] | None = None,
+    ) -> asyncio.Task | None:
+        """Dispatch tools based on user transcript, with fast rule match then model fallback."""
+        normalized = self._normalize_text(user_text)
+        if not normalized:
             return None
 
-        return asyncio.create_task(self._infer_and_execute_async(text, ws, clog, cooldown_map))
+        cooldown_map = cooldowns if cooldowns is not None else self._tool_cooldowns
+
+        fast_tool = self._fast_match_user_tool(normalized)
+        if fast_tool is not None:
+            if not self._consume_cooldown(fast_tool, cooldown_map, clog):
+                return None
+            tool = self.tools[fast_tool]
+            if tool.execution_mode == "blocking":
+                await self._execute_tool(fast_tool, user_text, ws, clog)
+                return None
+            return asyncio.create_task(self._execute_tool(fast_tool, user_text, ws, clog))
+
+        return asyncio.create_task(self._infer_and_execute_async(user_text, ws, clog, cooldown_map, source="user"))
 
 
 # Python 3.10 compat — contextlib.nullcontext works but import it properly

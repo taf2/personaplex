@@ -1,6 +1,7 @@
 from .config import ToolDefinition, ToolExecutor, load_tools
 from .engine import ToolIntentEngine, TextAccumulator
 from .executor import ShellExecutor, ExecutionResult
+from .stt import UserSTTEngine
 
 __all__ = [
     "ToolDefinition",
@@ -10,4 +11,5 @@ __all__ = [
     "TextAccumulator",
     "ShellExecutor",
     "ExecutionResult",
+    "UserSTTEngine",
 ]
