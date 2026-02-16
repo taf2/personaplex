@@ -1,5 +1,5 @@
 INTENT_MODEL="${INTENT_MODEL:-google/gemma-3-1b-it}"
-STT_PRESET="${STT_PRESET:-voxtral}"
+STT_PRESET="${STT_PRESET:-qwen}"
 
 case "$STT_PRESET" in
   voxtral)
